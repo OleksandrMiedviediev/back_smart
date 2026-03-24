@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'boards.json');
+const INVITES_FILE = path.join(DATA_DIR, 'invites.json');
 
 // 5 MB max per request (board data is typically < 200 KB)
 const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024;
@@ -57,6 +58,15 @@ function extractApiKey(req) {
     return '';
 }
 
+function extractInviteToken(req) {
+    const header = req.header('x-invite-token');
+    if (header) return header.trim();
+    const query = req.query.invite;
+    if (query && typeof query === 'string') return query.trim();
+    return '';
+}
+
+// Full API key required (for admin / invite management routes)
 function requireApiKey(req, res, next) {
     if (!API_KEY) {
         return next();
@@ -70,9 +80,33 @@ function requireApiKey(req, res, next) {
     next();
 }
 
+// Board routes: accept API key OR valid invite token for the specific room
+function requireBoardAuth(req, res, next) {
+    if (!API_KEY) return next();
+
+    const providedApiKey = extractApiKey(req);
+    if (providedApiKey && safeEqualStrings(providedApiKey, API_KEY)) {
+        return next();
+    }
+
+    const token = extractInviteToken(req);
+    if (token) {
+        const roomCode = req.params.roomCode ? req.params.roomCode.toUpperCase() : '';
+        const invite = Object.prototype.hasOwnProperty.call(invites, token) ? invites[token] : null;
+        if (invite && invite.roomCode === roomCode) {
+            return next();
+        }
+    }
+
+    return res.status(401).json({ error: 'Unauthorized' });
+}
+
 // ── Persistent in-memory store ───────────────────────────────────────────────
 // Shape: { [ROOM_CODE]: { data: object, lastUpdate: ISOString } }
 let store = {};
+
+// Shape: { [token]: { roomCode: string, createdAt: ISOString } }
+let invites = {};
 
 function loadStore() {
     try {
@@ -107,6 +141,39 @@ function scheduleSave() {
 
 loadStore();
 
+function loadInvites() {
+    try {
+        if (fs.existsSync(INVITES_FILE)) {
+            const raw = fs.readFileSync(INVITES_FILE, 'utf8');
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                invites = parsed;
+                console.log(`Loaded ${Object.keys(invites).length} invite(s) from disk.`);
+            }
+        }
+    } catch (err) {
+        console.warn('Could not load invites:', err.message);
+        invites = {};
+    }
+}
+
+let saveInvitesTimer = null;
+
+function scheduleSaveInvites() {
+    if (saveInvitesTimer) return;
+    saveInvitesTimer = setTimeout(() => {
+        saveInvitesTimer = null;
+        try {
+            fs.mkdirSync(DATA_DIR, { recursive: true });
+            fs.writeFileSync(INVITES_FILE, JSON.stringify(invites), 'utf8');
+        } catch (err) {
+            console.error('Could not persist invites:', err.message);
+        }
+    }, 2000);
+}
+
+loadInvites();
+
 // ── Express app ──────────────────────────────────────────────────────────────
 const app = express();
 
@@ -123,8 +190,8 @@ app.use((req, res, next) => {
 
     if (isAllowedOrigin(origin)) {
         res.setHeader('Access-Control-Allow-Origin', origin);
-        res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, Authorization');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, DELETE, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, Authorization, X-Invite-Token');
         res.setHeader('Vary', 'Origin');
     }
 
@@ -135,7 +202,7 @@ app.use((req, res, next) => {
         return res.sendStatus(204);
     }
 
-    next();
+        return next();
 });
 
 // Body parser with size limit (must be before routes that read req.body)
@@ -145,8 +212,6 @@ app.use(express.json({ limit: MAX_PAYLOAD_BYTES }));
 app.use(['/data', '/server.js', '/package.json', '/package-lock.json'], (_req, res) => {
     res.status(403).end();
 });
-
-app.use('/api', requireApiKey);
 
 // ── API routes ───────────────────────────────────────────────────────────────
 
@@ -162,7 +227,7 @@ function validateRoomCode(req, res, next) {
  * Returns the current board snapshot for the room.
  * Response: { data: object|null, lastUpdate: string }
  */
-app.get('/api/board/:roomCode', validateRoomCode, (req, res) => {
+app.get('/api/board/:roomCode', validateRoomCode, requireBoardAuth, (req, res) => {
     const key = req.params.roomCode.toUpperCase();
     const entry = store[key] || null;
     res.json({
@@ -177,7 +242,7 @@ app.get('/api/board/:roomCode', validateRoomCode, (req, res) => {
  * Body: { data: object, lastKnownUpdate?: string }
  * Response: { lastUpdate: string }
  */
-app.put('/api/board/:roomCode', validateRoomCode, (req, res) => {
+app.put('/api/board/:roomCode', validateRoomCode, requireBoardAuth, (req, res) => {
     const key = req.params.roomCode.toUpperCase();
     const { data } = req.body || {};
 
@@ -190,6 +255,46 @@ app.put('/api/board/:roomCode', validateRoomCode, (req, res) => {
     scheduleSave();
 
     res.json({ lastUpdate });
+});
+
+/**
+ * POST /api/board/:roomCode/invite
+ * Creates a new invite token for the given room. Requires API key.
+ * Response: { token, roomCode, createdAt }
+ */
+app.post('/api/board/:roomCode/invite', requireApiKey, validateRoomCode, (req, res) => {
+    const roomCode = req.params.roomCode.toUpperCase();
+    const token = crypto.randomBytes(32).toString('hex');
+    invites[token] = { roomCode, createdAt: new Date().toISOString() };
+    scheduleSaveInvites();
+    res.json({ token, roomCode, createdAt: invites[token].createdAt });
+});
+
+/**
+ * GET /api/board/:roomCode/invites
+ * Lists all active invite tokens for the room. Requires API key.
+ */
+app.get('/api/board/:roomCode/invites', requireApiKey, validateRoomCode, (req, res) => {
+    const roomCode = req.params.roomCode.toUpperCase();
+    const result = Object.entries(invites)
+        .filter(([, value]) => value.roomCode === roomCode)
+        .map(([token, value]) => ({ token, roomCode: value.roomCode, createdAt: value.createdAt }));
+    res.json(result);
+});
+
+/**
+ * DELETE /api/invite/:token
+ * Revokes an invite token. Requires API key.
+ * Response: { revoked: boolean }
+ */
+app.delete('/api/invite/:token', requireApiKey, (req, res) => {
+    const token = req.params.token;
+    const existed = Object.prototype.hasOwnProperty.call(invites, token);
+    if (existed) {
+        delete invites[token];
+        scheduleSaveInvites();
+    }
+    res.json({ revoked: existed });
 });
 
 // ── Static frontend ──────────────────────────────────────────────────────────
