@@ -17,8 +17,10 @@ const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024;
 // Allow letters, digits, hyphens and underscores, 1–64 chars
 const ROOM_CODE_RE = /^[A-Z0-9_-]{1,64}$/i;
 const API_KEY = String(process.env.API_KEY || '').trim();
+const CORS_DEFAULT_ALLOW_ALL = String(process.env.CORS_DEFAULT_ALLOW_ALL || 'true').trim().toLowerCase() !== 'false';
+const DEBUG_CORS = String(process.env.DEBUG_CORS || '').trim().toLowerCase() === 'true';
 const ALLOWED_ORIGINS_RAW = String(process.env.ALLOWED_ORIGINS || '')
-    .split(',')
+    .split(/[\s,;]+/)
     .map((value) => value.trim())
     .filter(Boolean);
 const ALLOWED_ORIGIN_PATTERNS = ALLOWED_ORIGINS_RAW
@@ -86,7 +88,7 @@ function isAllowedOrigin(origin) {
     }
 
     if (!ALLOWED_ORIGIN_PATTERNS.length) {
-        return false;
+        return CORS_DEFAULT_ALLOW_ALL;
     }
 
     return ALLOWED_ORIGIN_PATTERNS.some((pattern) => matchesOriginPattern(normalizedOrigin, pattern));
@@ -181,9 +183,14 @@ app.use((_req, res, next) => {
 app.use((req, res, next) => {
     const origin = req.headers.origin;
     const allowed = isAllowedOrigin(origin);
+    const normalizedOrigin = normalizeOrigin(origin);
+
+    if (DEBUG_CORS && (req.method === 'OPTIONS' || req.path.startsWith('/api/'))) {
+        console.log(`[CORS] method=${req.method} path=${req.path} origin=${origin || '-'} normalized=${normalizedOrigin || '-'} allowed=${allowed}`);
+    }
 
     if (allowed) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Access-Control-Allow-Origin', origin || '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, Authorization');
         res.setHeader('Access-Control-Max-Age', '86400');
@@ -278,6 +285,8 @@ const server = app.listen(PORT, () => {
         console.log('CORS allowlist: * (any origin)');
     } else if (ALLOWED_ORIGIN_PATTERNS.length) {
         console.log(`CORS allowlist: ${ALLOWED_ORIGIN_PATTERNS.join(', ')}`);
+    } else if (CORS_DEFAULT_ALLOW_ALL) {
+        console.log('CORS allowlist: empty -> allow all origins (fallback)');
     } else {
         console.log('CORS allowlist: empty (cross-origin browser requests denied)');
     }
