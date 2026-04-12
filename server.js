@@ -17,19 +17,43 @@ const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024;
 // Allow letters, digits, hyphens and underscores, 1–64 chars
 const ROOM_CODE_RE = /^[A-Z0-9_-]{1,64}$/i;
 const API_KEY = String(process.env.API_KEY || '').trim();
-const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || '')
+const ALLOWED_ORIGINS_RAW = String(process.env.ALLOWED_ORIGINS || '')
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
+const ALLOW_ALL_ORIGINS = ALLOWED_ORIGINS_RAW.includes('*');
+const ALLOWED_ORIGINS = ALLOWED_ORIGINS_RAW
+    .filter((value) => value !== '*')
+    .map((value) => normalizeOrigin(value))
+    .filter(Boolean);
+
+function normalizeOrigin(origin) {
+    if (!origin) {
+        return '';
+    }
+
+    try {
+        return new URL(origin).origin;
+    } catch (_err) {
+        return String(origin).trim().replace(/\/$/, '');
+    }
+}
 
 function isAllowedOrigin(origin) {
-    if (!origin) {
+    const normalizedOrigin = normalizeOrigin(origin);
+    if (!normalizedOrigin) {
         return false;
     }
+
+    if (ALLOW_ALL_ORIGINS) {
+        return true;
+    }
+
     if (!ALLOWED_ORIGINS.length) {
         return false;
     }
-    return ALLOWED_ORIGINS.includes(origin);
+
+    return ALLOWED_ORIGINS.includes(normalizedOrigin);
 }
 
 function safeEqualStrings(left, right) {
@@ -120,16 +144,18 @@ app.use((_req, res, next) => {
 // CORS – deny by default, allow only configured origins
 app.use((req, res, next) => {
     const origin = req.headers.origin;
+    const allowed = isAllowedOrigin(origin);
 
-    if (isAllowedOrigin(origin)) {
+    if (allowed) {
         res.setHeader('Access-Control-Allow-Origin', origin);
         res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, Authorization');
+        res.setHeader('Access-Control-Max-Age', '86400');
         res.setHeader('Vary', 'Origin');
     }
 
     if (req.method === 'OPTIONS') {
-        if (!origin || !isAllowedOrigin(origin)) {
+        if (!origin || !allowed) {
             return res.sendStatus(403);
         }
         return res.sendStatus(204);
@@ -212,7 +238,9 @@ const server = app.listen(PORT, () => {
     } else {
         console.log('API auth: disabled (set API_KEY to enable)');
     }
-    if (ALLOWED_ORIGINS.length) {
+    if (ALLOW_ALL_ORIGINS) {
+        console.log('CORS allowlist: * (any origin)');
+    } else if (ALLOWED_ORIGINS.length) {
         console.log(`CORS allowlist: ${ALLOWED_ORIGINS.join(', ')}`);
     } else {
         console.log('CORS allowlist: empty (cross-origin browser requests denied)');
