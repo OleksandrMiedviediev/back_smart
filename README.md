@@ -28,7 +28,8 @@ ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
 
 - Если `ALLOWED_ORIGINS` пустой, браузерные cross-origin запросы блокируются.
 - Для быстрой отладки можно использовать `ALLOWED_ORIGINS=*`.
-- В проде указывай точные origin через запятую (например, `https://drive.corp.amazon.com`).
+- В проде указывай origin через запятую (например, `https://drive.corp.amazon.com`).
+- Поддерживаются wildcard-шаблоны, например `https://*.corp.amazon.com`.
 
 ## Важно про OAuth authorize endpoint
 

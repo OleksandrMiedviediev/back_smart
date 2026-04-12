@@ -21,10 +21,8 @@ const ALLOWED_ORIGINS_RAW = String(process.env.ALLOWED_ORIGINS || '')
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
-const ALLOW_ALL_ORIGINS = ALLOWED_ORIGINS_RAW.includes('*');
-const ALLOWED_ORIGINS = ALLOWED_ORIGINS_RAW
-    .filter((value) => value !== '*')
-    .map((value) => normalizeOrigin(value))
+const ALLOWED_ORIGIN_PATTERNS = ALLOWED_ORIGINS_RAW
+    .map((value) => normalizeOriginPattern(value))
     .filter(Boolean);
 
 function normalizeOrigin(origin) {
@@ -39,21 +37,59 @@ function normalizeOrigin(origin) {
     }
 }
 
+function normalizeOriginPattern(pattern) {
+    if (!pattern) {
+        return '';
+    }
+
+    const normalized = String(pattern).trim();
+    if (!normalized) {
+        return '';
+    }
+
+    if (normalized === '*') {
+        return '*';
+    }
+
+    if (!normalized.includes('*')) {
+        return normalizeOrigin(normalized);
+    }
+
+    return normalized.replace(/\/$/, '');
+}
+
+function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function matchesOriginPattern(normalizedOrigin, originPattern) {
+    if (!originPattern) {
+        return false;
+    }
+
+    if (originPattern === '*') {
+        return true;
+    }
+
+    if (!originPattern.includes('*')) {
+        return normalizedOrigin === originPattern;
+    }
+
+    const patternRegex = new RegExp(`^${escapeRegExp(originPattern).replace(/\\\*/g, '.*')}$`, 'i');
+    return patternRegex.test(normalizedOrigin);
+}
+
 function isAllowedOrigin(origin) {
     const normalizedOrigin = normalizeOrigin(origin);
     if (!normalizedOrigin) {
         return false;
     }
 
-    if (ALLOW_ALL_ORIGINS) {
-        return true;
-    }
-
-    if (!ALLOWED_ORIGINS.length) {
+    if (!ALLOWED_ORIGIN_PATTERNS.length) {
         return false;
     }
 
-    return ALLOWED_ORIGINS.includes(normalizedOrigin);
+    return ALLOWED_ORIGIN_PATTERNS.some((pattern) => matchesOriginPattern(normalizedOrigin, pattern));
 }
 
 function safeEqualStrings(left, right) {
@@ -238,10 +274,10 @@ const server = app.listen(PORT, () => {
     } else {
         console.log('API auth: disabled (set API_KEY to enable)');
     }
-    if (ALLOW_ALL_ORIGINS) {
+    if (ALLOWED_ORIGIN_PATTERNS.includes('*')) {
         console.log('CORS allowlist: * (any origin)');
-    } else if (ALLOWED_ORIGINS.length) {
-        console.log(`CORS allowlist: ${ALLOWED_ORIGINS.join(', ')}`);
+    } else if (ALLOWED_ORIGIN_PATTERNS.length) {
+        console.log(`CORS allowlist: ${ALLOWED_ORIGIN_PATTERNS.join(', ')}`);
     } else {
         console.log('CORS allowlist: empty (cross-origin browser requests denied)');
     }
