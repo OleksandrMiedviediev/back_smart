@@ -122,7 +122,7 @@ app.use((req, res, next) => {
     const origin = req.headers.origin;
 
     if (isAllowedOrigin(origin)) {
-        res.setHeader('Access-Control-Allow-Origin', 'true');
+        res.setHeader('Access-Control-Allow-Origin', origin);
         res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, Authorization');
         res.setHeader('Vary', 'Origin');
